@@ -1959,6 +1959,7 @@ local Preview = {
         Tracer = false, TracerColor = nil,
         Chams = false, ChamsColor = Color3.fromRGB(255, 80, 80), ChamsTransparency = 0,
         AutoRotate = 0,
+        Animate = true, Animation = nil, -- Animation = custom id, nil = avatar's own idle
     },
     Rig = {
         Skin = Color3.fromRGB(234, 184, 146),
@@ -2075,6 +2076,60 @@ local function TryCall(obj, names, ...)
         end
     end
 end
+-- Models built outside the live world never get their joints solved, so limbs/accessories
+-- sit wherever they spawned. Place every part from the root through its joints, then snap
+-- accessories onto their matching body attachments.
+local function SolveRig(model)
+    local root = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+    if not root then return end
+    local placed = { [root] = true }
+    local joints = {}
+    for _, j in ipairs(model:GetDescendants()) do
+        if (j:IsA("Motor6D") or j:IsA("Weld")) and j.Part0 and j.Part1 then table.insert(joints, j) end
+    end
+    local progress = true
+    while progress do
+        progress = false
+        for _, j in ipairs(joints) do
+            local a, b = j.Part0, j.Part1
+            if placed[a] and not placed[b] then
+                b.CFrame = a.CFrame * j.C0 * j.C1:Inverse()
+                placed[b], progress = true, true
+            elseif placed[b] and not placed[a] then
+                a.CFrame = b.CFrame * j.C1 * j.C0:Inverse()
+                placed[a], progress = true, true
+            end
+        end
+    end
+    for _, acc in ipairs(model:GetChildren()) do
+        if acc:IsA("Accoutrement") then
+            local handle = acc:FindFirstChild("Handle")
+            if handle and handle:IsA("BasePart") and not placed[handle] then
+                local snapped = false
+                for _, att in ipairs(handle:GetChildren()) do
+                    if att:IsA("Attachment") then
+                        for _, part in ipairs(model:GetChildren()) do
+                            local target = part:IsA("BasePart") and part:FindFirstChild(att.Name)
+                            if target and target:IsA("Attachment") then
+                                handle.CFrame = target.WorldCFrame * att.CFrame:Inverse()
+                                local w = Instance.new("Weld")
+                                w.Name = "AccessoryWeld"
+                                w.Part0, w.Part1 = part, handle
+                                w.C0, w.C1 = target.CFrame, att.CFrame
+                                w.Parent = handle
+                                snapped = true
+                                break
+                            end
+                        end
+                    end
+                    if snapped then break end
+                end
+                if not snapped then acc:Destroy() end
+            end
+        end
+    end
+end
+
 local function FetchAvatar(userId)
     userId = tonumber(userId) or LocalPlayer.UserId
     if AvatarCache[userId] then return AvatarCache[userId]:Clone() end
@@ -2087,9 +2142,14 @@ local function FetchAvatar(userId)
         end
     end
     if model then
+        SolveRig(model)
+        local animate = model:FindFirstChild("Animate")
+        local idle = animate and animate:FindFirstChild("idle")
+        local main = idle and (idle:FindFirstChild("Animation1") or idle:FindFirstChildWhichIsA("Animation"))
+        if main and main:IsA("Animation") and main.AnimationId ~= "" then model:SetAttribute("MoneyLibIdle", main.AnimationId) end
         for _, d in ipairs(model:GetDescendants()) do
             if d:IsA("BaseScript") or d:IsA("Sound") then d:Destroy()
-            elseif d:IsA("BasePart") then d.Anchored = true; d.CanCollide = false end
+            elseif d:IsA("BasePart") then d.Anchored = (d.Name == "HumanoidRootPart"); d.CanCollide = false end
         end
         local hum = model:FindFirstChildOfClass("Humanoid")
         if hum then hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end
@@ -2161,6 +2221,7 @@ function Window:_BuildPreview()
     local modelDD = opts:AddDropdown("ML_PreviewModel", { Text = "Model", Values = {}, Default = nil })
     local fov = opts:AddSlider("ML_PreviewFOV", { Text = "Field Of View", Min = 30, Max = 110, Default = 70, Rounding = 0 })
     local spin = opts:AddToggle("ML_PreviewSpin", { Text = "Auto Rotate", Default = false })
+    local animT = opts:AddToggle("ML_PreviewAnim", { Text = "Idle Animation", Default = true })
     SaveManager.Ignore.ML_PreviewModel = true
 
     local yaw = math.rad(200)
@@ -2195,6 +2256,25 @@ function Window:_BuildPreview()
         end
     end
 
+    local DefaultIdle = { R15 = "rbxassetid://507766388", R6 = "rbxassetid://180435571" }
+    local function playIdle()
+        if Preview.Track then pcall(function() Preview.Track:Stop(0); Preview.Track:Destroy() end); Preview.Track = nil end
+        local hum = model and model:FindFirstChildOfClass("Humanoid")
+        if not hum or not Preview.Settings.Animate then return end
+        local animator = hum:FindFirstChildOfClass("Animator") or Instance.new("Animator", hum)
+        local id = Preview.Settings.Animation or model:GetAttribute("MoneyLibIdle")
+            or (hum.RigType == Enum.HumanoidRigType.R6 and DefaultIdle.R6 or DefaultIdle.R15)
+        if typeof(id) == "number" then id = "rbxassetid://" .. id end
+        local anim = Instance.new("Animation")
+        anim.AnimationId = id
+        local ok, track = pcall(animator.LoadAnimation, animator, anim)
+        if ok and track then
+            track.Looped = true
+            track:Play(0)
+            Preview.Track = track
+        end
+    end
+
     local function useModel(m, label)
         if model then model:Destroy() end
         table.clear(orig)
@@ -2208,6 +2288,7 @@ function Window:_BuildPreview()
         Preview.CurrentName = label or model.Name
         fitCamera()
         applyChams()
+        playIdle()
     end
 
     local loadToken = 0
@@ -2263,6 +2344,7 @@ function Window:_BuildPreview()
     function Preview:Set(key, value)
         self.Settings[key] = value
         if key == "Chams" or key == "ChamsColor" or key == "ChamsTransparency" then applyChams() end
+        if key == "Animate" or key == "Animation" then playIdle() end
     end
     function Preview:SetRotation(deg)
         if not model then return end
@@ -2294,6 +2376,7 @@ function Window:_BuildPreview()
     modelDD:OnChanged(function(v) if v then loadNamed(v) end end)
     fov:OnChanged(function(v) cam.FieldOfView = v; fitCamera() end)
     spin:OnChanged(function(v) Preview.Settings.AutoRotate = v and 0.6 or 0 end)
+    animT:OnChanged(function(v) if Preview.Settings.Animate ~= v then Preview:Set("Animate", v) end end)
 
     ------------------------------------------------ rotate by dragging
     local dragging, lastX
