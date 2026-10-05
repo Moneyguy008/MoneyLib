@@ -315,7 +315,8 @@ do
     if typeof(gethui) == "function" then
         parented = pcall(function() ScreenGui.Parent = gethui() end)
     end
-    if not parented then
+    -- only executors can use CoreGui; plain Studio/game scripts go to PlayerGui
+    if not parented and genv then
         if typeof(protectgui) == "function" then pcall(protectgui, ScreenGui)
         elseif typeof(syn) == "table" and syn.protect_gui then pcall(syn.protect_gui, ScreenGui) end
         parented = pcall(function() ScreenGui.Parent = CoreGui end) and ScreenGui.Parent == CoreGui
