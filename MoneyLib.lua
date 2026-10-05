@@ -2542,6 +2542,21 @@ function Library:Toggle()
     self:SetOpen(not self.Open)
 end
 
+-- First-person games lock and hide the cursor every frame. While the menu is
+-- open, force it back so the user can actually click. We only override when a
+-- window exists and is open, and never while a text box is focused by the game.
+Connect(RunService.RenderStepped, function()
+    if Library.Unloaded or not Library.Open or not Library.Window then return end
+    pcall(function()
+        if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+            UserInputService.MouseBehavior = Enum.MouseBehavior.Default
+        end
+        if not UserInputService.MouseIconEnabled then
+            UserInputService.MouseIconEnabled = true
+        end
+    end)
+end)
+
 function Library:OnUnload(fn) table.insert(self.UnloadCallbacks, fn) end
 
 function Library:Unload()
