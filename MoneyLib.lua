@@ -976,6 +976,22 @@ function Groupbox:AddLabel(text, wrap, idx)
     return L
 end
 
+-- Standalone color picker in its own row (label on the left, swatch on the right).
+function Groupbox:AddColorPicker(idx, info)
+    info = info or {}
+    local L = self:AddLabel(info.Text or info.Title or tostring(idx))
+    L:AddColorPicker(idx, info)
+    return Options[idx]
+end
+
+-- Standalone key picker in its own row.
+function Groupbox:AddKeyPicker(idx, info)
+    info = info or {}
+    local L = self:AddLabel(info.Text or tostring(idx))
+    L:AddKeyPicker(idx, info)
+    return Options[idx]
+end
+
 ---------------------------------------------------------------- Divider
 function Groupbox:AddDivider()
     local row = self:_Row(5)
