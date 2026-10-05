@@ -25,6 +25,7 @@ local TextService      = Service("TextService")
 local HttpService      = Service("HttpService")
 local Stats            = Service("Stats")
 local CoreGui          = Service("CoreGui")
+local GuiService       = Service("GuiService")
 
 local LocalPlayer = Players.LocalPlayer
 local genv = (typeof(getgenv) == "function" and getgenv()) or nil
@@ -187,10 +188,16 @@ local function SafeCall(fn, ...)
     if not ok then warn("[MoneyLib] callback error: " .. tostring(err)) end
 end
 
+-- Mouse position in the same space as GuiObject.AbsolutePosition.
+-- GetMouseLocation includes the topbar inset but AbsolutePosition does not.
+local function MousePos()
+    return UserInputService:GetMouseLocation() - GuiService:GetGuiInset()
+end
+
 local function MouseIn(gui, pad)
     if not gui or not gui.Parent or not gui.Visible then return false end
     pad = pad or 0
-    local m = UserInputService:GetMouseLocation()
+    local m = MousePos()
     local p, s = gui.AbsolutePosition, gui.AbsoluteSize
     return m.X >= p.X - pad and m.X <= p.X + s.X + pad and m.Y >= p.Y - pad and m.Y <= p.Y + s.Y + pad
 end
@@ -359,15 +366,14 @@ local function MakeDraggable(frame, handle)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
             BringToFront(frame)
             dragging = true
-            startMouse = UserInputService:GetMouseLocation()
-            startPos = frame.AbsolutePosition
+            startMouse = MousePos()
+            startPos = frame.Position
         end
     end)
     Connect(UserInputService.InputChanged, function(input)
         if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            local d = UserInputService:GetMouseLocation() - startMouse
-            local anchorOff = frame.AnchorPoint * frame.AbsoluteSize
-            frame.Position = UDim2.fromOffset(startPos.X + d.X + anchorOff.X, startPos.Y + d.Y + anchorOff.Y)
+            local d = MousePos() - startMouse
+            frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
         end
     end)
     Connect(UserInputService.InputEnded, function(input)
@@ -400,7 +406,7 @@ end
 Connect(RunService.RenderStepped, function()
     if Tooltip.Visible then
         if not TooltipOwner or not IsVisibleDeep(TooltipOwner) then Tooltip.Visible = false return end
-        local m = UserInputService:GetMouseLocation()
+        local m = MousePos() - TopLayer.AbsolutePosition
         Tooltip.Position = UDim2.fromOffset(m.X + 14, m.Y + 8)
     end
 end)
@@ -450,13 +456,14 @@ end
 
 Connect(RunService.RenderStepped, function()
     local vp = ScreenGui.AbsoluteSize
+    local origin = PopupLayer.AbsolutePosition
     for i = #Library.Popups, 1, -1 do
         local p = Library.Popups[i]
         if p and p.Frame then
             if not IsVisibleDeep(p.Anchor) then
                 Library:ClosePopup(p.Frame)
             else
-                local ap, as = p.Anchor.AbsolutePosition, p.Anchor.AbsoluteSize
+                local ap, as = p.Anchor.AbsolutePosition - origin, p.Anchor.AbsoluteSize
                 if p.MatchWidth then p.Frame.Size = UDim2.fromOffset(as.X, p.Frame.Size.Y.Offset) end
                 local fs = p.Frame.AbsoluteSize
                 local x, y
@@ -719,6 +726,7 @@ local function CreateKeyPicker(parentObj, row, idx, info)
         parentObj:OnChanged(function(v) KP.Toggled = v; KP:_Update() end)
     end
 
+    KP.Chip = chip
     if info.NoUIChip then chip.Visible = false end
     KP:_Update()
     Options[idx] = KP
@@ -726,9 +734,17 @@ local function CreateKeyPicker(parentObj, row, idx, info)
     return KP
 end
 
+local function AliveKeyPickers()
+    for i = #Library.KeyPickers, 1, -1 do
+        local kp = Library.KeyPickers[i]
+        if not (kp.Chip and kp.Chip:IsDescendantOf(ScreenGui)) then table.remove(Library.KeyPickers, i) end
+    end
+    return Library.KeyPickers
+end
+
 Connect(UserInputService.InputBegan, function(input, gpe)
     if UserInputService:GetFocusedTextBox() then return end
-    for _, kp in ipairs(Library.KeyPickers) do
+    for _, kp in ipairs(AliveKeyPickers()) do
         if not kp.Picking and KeyMatches(input, kp.Value) then
             if kp.Mode == "Toggle" then kp.Toggled = not kp.Toggled end
             kp:DoClick()
@@ -837,7 +853,7 @@ local function CreateColorPicker(row, idx, info)
 
     local dragging
     local function update()
-        local m = UserInputService:GetMouseLocation()
+        local m = MousePos()
         if dragging == "sv" then
             CP.Sat = math.clamp((m.X - sv.AbsolutePosition.X) / sv.AbsoluteSize.X, 0, 1)
             CP.Vib = 1 - math.clamp((m.Y - sv.AbsolutePosition.Y) / sv.AbsoluteSize.Y, 0, 1)
@@ -1073,7 +1089,7 @@ function Groupbox:AddSlider(idx, info)
 
     local dragging = false
     local function update()
-        local m = UserInputService:GetMouseLocation()
+        local m = MousePos()
         local a = math.clamp((m.X - bar.AbsolutePosition.X) / bar.AbsoluteSize.X, 0, 1)
         S:SetValue(S.Min + (S.Max - S.Min) * a)
     end
@@ -1549,6 +1565,10 @@ function Library:CreateWindow(info)
     if info.Accent then Library.DefaultAccent = info.Accent; Library:SetAccent(info.Accent) end
     SaveManager:BuildFolders()
 
+    if Library.Window then
+        warn("[MoneyLib] CreateWindow called again - replacing the previous window (is your script running twice?)")
+        Library.Window:_Destroy()
+    end
     local self = setmetatable({ Tabs = {}, Aux = {}, DockButtons = {} }, Window)
     local vp = ScreenGui.AbsoluteSize
     if vp.X < 200 then vp = workspace.CurrentCamera.ViewportSize end
@@ -1593,10 +1613,10 @@ function Library:CreateWindow(info)
     New("Frame", { Parent = grip, BackgroundColor3 = "Outline", AnchorPoint = Vector2.new(1, 1), Position = UDim2.new(1, -2, 1, -2), Size = UDim2.fromOffset(1, 8) })
     do
         local resizing, startM, startS
-        Connect(grip.InputBegan, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then resizing = true; startM = UserInputService:GetMouseLocation(); startS = main.AbsoluteSize end end)
+        Connect(grip.InputBegan, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then resizing = true; startM = MousePos(); startS = main.AbsoluteSize end end)
         Connect(UserInputService.InputChanged, function(i)
             if resizing and i.UserInputType == Enum.UserInputType.MouseMovement then
-                local d = UserInputService:GetMouseLocation() - startM
+                local d = MousePos() - startM
                 main.Size = UDim2.fromOffset(math.max(460, startS.X + d.X), math.max(320, startS.Y + d.Y))
             end
         end)
@@ -1620,6 +1640,15 @@ function Library:CreateWindow(info)
     Library.Window = self
     Library:SetOpen(info.AutoShow ~= false)
     return self
+end
+
+function Window:_Destroy()
+    for i = #Library.Popups, 1, -1 do Library:ClosePopup(Library.Popups[i].Frame) end
+    for _, aux in pairs(self.Aux) do aux.Frame:Destroy() end
+    if self.Dock then self.Dock:Destroy() end
+    if self.Frame then self.Frame:Destroy() end
+    if self.PreviewModel then self.PreviewModel:Destroy() end
+    if Library.Window == self then Library.Window = nil end
 end
 
 --------------------------------------------------- tabs
@@ -1727,7 +1756,7 @@ end
 
 --------------------------------------------------- dock
 function Window:_BuildDock()
-    local dock = New("Frame", { Parent = HudLayer, BackgroundColor3 = "Background", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 66), Size = UDim2.fromOffset(0, 32), AutomaticSize = Enum.AutomaticSize.X })
+    local dock = New("Frame", { Parent = HudLayer, BackgroundColor3 = "Background", AnchorPoint = Vector2.new(0.5, 0), Position = UDim2.new(0.5, 0, 0, 8), Size = UDim2.fromOffset(0, 32), AutomaticSize = Enum.AutomaticSize.X })
     Stroke(dock, "Outline")
     Padding(dock, 0, 4)
     List(dock, 2, Enum.FillDirection.Horizontal, nil, Enum.VerticalAlignment.Center)
@@ -1920,54 +1949,178 @@ function Window:_BuildPlayers()
 end
 
 --------------------------------------------------- ESP preview window
-local Preview = { Settings = { Box = true, Name = true, HealthBar = true, Distance = true, Chams = false, BoxColor = nil, ChamsColor = Color3.fromRGB(255, 80, 80) } }
+local Preview = {
+    Settings = {
+        Box = true, BoxColor = nil, BoxStyle = "Full", BoxFill = false, BoxFillTransparency = 0.85,
+        Name = true, NameText = nil, NameColor = nil,
+        HealthBar = true, Health = 0.8,
+        Distance = true, DistanceText = "24m",
+        Skeleton = false, SkeletonColor = nil,
+        Tracer = false, TracerColor = nil,
+        Chams = false, ChamsColor = Color3.fromRGB(255, 80, 80), ChamsTransparency = 0,
+        AutoRotate = 0,
+    },
+    Rig = {
+        Skin = Color3.fromRGB(234, 184, 146),
+        Shirt = Color3.fromRGB(38, 42, 48),
+        Pants = Color3.fromRGB(24, 26, 30),
+        Shoes = Color3.fromRGB(14, 14, 16),
+        Face = true,
+    },
+    Models = {},      -- name -> function() return Model end
+    ModelOrder = {},
+}
 Library.Preview = Preview
 
-local function BuildDummy()
-    local model = Instance.new("Model")
-    model.Name = "Dummy"
-    local function part(name, size, cf, color)
-        local p = Instance.new("Part")
-        p.Name, p.Size, p.CFrame, p.Anchored = name, size, cf, true
-        p.Color = color or Color3.fromRGB(150, 150, 150)
-        p.TopSurface, p.BottomSurface = Enum.SurfaceType.Smooth, Enum.SurfaceType.Smooth
-        p.Parent = model
-        return p
-    end
-    local root = part("HumanoidRootPart", Vector3.new(2, 2, 1), CFrame.new(0, 3, 0))
-    root.Transparency = 1
-    part("Head", Vector3.new(2, 1, 1), CFrame.new(0, 4.5, 0), Color3.fromRGB(240, 200, 160))
-    part("Torso", Vector3.new(2, 2, 1), CFrame.new(0, 3, 0), Color3.fromRGB(40, 45, 50))
-    part("Left Arm", Vector3.new(1, 2, 1), CFrame.new(-1.5, 3, 0), Color3.fromRGB(240, 200, 160))
-    part("Right Arm", Vector3.new(1, 2, 1), CFrame.new(1.5, 3, 0), Color3.fromRGB(240, 200, 160))
-    part("Left Leg", Vector3.new(1, 2, 1), CFrame.new(-0.5, 1, 0), Color3.fromRGB(30, 30, 35))
-    part("Right Leg", Vector3.new(1, 2, 1), CFrame.new(0.5, 1, 0), Color3.fromRGB(30, 30, 35))
-    model.PrimaryPart = root
-    return model
+local function MakePart(model, name, size, cf, color)
+    local p = Instance.new("Part")
+    p.Name, p.Size, p.CFrame, p.Anchored, p.CanCollide = name, size, cf, true, false
+    p.Color = color
+    p.Material = Enum.Material.SmoothPlastic
+    p.TopSurface, p.BottomSurface = Enum.SurfaceType.Smooth, Enum.SurfaceType.Smooth
+    p.Parent = model
+    return p
 end
 
-local function CloneCharacter()
-    local char = LocalPlayer.Character
-    if not char then return nil end
-    local old = char.Archivable
-    char.Archivable = true
-    local ok, clone = pcall(function() return char:Clone() end)
-    char.Archivable = old
+-- R15-proportioned dummy (UpperTorso/LowerTorso/UpperArm/LowerArm/Hand/...), relaxed pose
+local function BuildR15(rig)
+    rig = rig or Preview.Rig
+    local m = Instance.new("Model")
+    m.Name = "Dummy"
+    local root = MakePart(m, "HumanoidRootPart", Vector3.new(2, 2, 1), CFrame.new(0, 3.05, 0), rig.Shirt)
+    root.Transparency = 1
+    MakePart(m, "LowerTorso", Vector3.new(2, 0.45, 1), CFrame.new(0, 2.275, 0), rig.Pants)
+    MakePart(m, "UpperTorso", Vector3.new(2, 1.55, 1), CFrame.new(0, 3.275, 0), rig.Shirt)
+    local head = MakePart(m, "Head", Vector3.new(2, 1, 1), CFrame.new(0, 4.68, 0), rig.Skin)
+    local mesh = Instance.new("SpecialMesh")
+    mesh.MeshType = Enum.MeshType.Head
+    mesh.Scale = Vector3.new(1.25, 1.25, 1.25)
+    mesh.Parent = head
+    if rig.Face then
+        local face = Instance.new("Decal")
+        face.Name = "face"
+        face.Texture = "rbxasset://textures/face.png"
+        face.Face = Enum.NormalId.Front
+        face.Parent = head
+    end
+    for _, side in ipairs({ -1, 1 }) do
+        local n = side < 0 and "Left" or "Right"
+        -- arms hang from the shoulder with a slight outward angle
+        local shoulder = CFrame.new(1.5 * side, 4.0, 0) * CFrame.Angles(0, 0, math.rad(4 * side))
+        MakePart(m, n .. "UpperArm", Vector3.new(0.95, 0.95, 0.95), shoulder * CFrame.new(0, -0.475, 0), rig.Shirt)
+        MakePart(m, n .. "LowerArm", Vector3.new(0.9, 0.85, 0.9), shoulder * CFrame.new(0, -1.375, 0), rig.Skin)
+        MakePart(m, n .. "Hand", Vector3.new(0.85, 0.3, 0.85), shoulder * CFrame.new(0, -1.95, 0), rig.Skin)
+        MakePart(m, n .. "UpperLeg", Vector3.new(0.95, 0.9, 0.95), CFrame.new(0.5 * side, 1.6, 0), rig.Pants)
+        MakePart(m, n .. "LowerLeg", Vector3.new(0.9, 0.85, 0.9), CFrame.new(0.5 * side, 0.725, 0), rig.Pants)
+        MakePart(m, n .. "Foot", Vector3.new(0.95, 0.3, 1.05), CFrame.new(0.5 * side, 0.15, -0.05), rig.Shoes)
+    end
+    m.PrimaryPart = root
+    return m
+end
+
+-- classic blocky R6
+local function BuildR6(rig)
+    rig = rig or Preview.Rig
+    local m = Instance.new("Model")
+    m.Name = "R6"
+    local root = MakePart(m, "HumanoidRootPart", Vector3.new(2, 2, 1), CFrame.new(0, 3, 0), rig.Shirt)
+    root.Transparency = 1
+    local head = MakePart(m, "Head", Vector3.new(2, 1, 1), CFrame.new(0, 4.5, 0), rig.Skin)
+    local mesh = Instance.new("SpecialMesh")
+    mesh.MeshType = Enum.MeshType.Head
+    mesh.Scale = Vector3.new(1.25, 1.25, 1.25)
+    mesh.Parent = head
+    if rig.Face then
+        local face = Instance.new("Decal")
+        face.Texture = "rbxasset://textures/face.png"
+        face.Parent = head
+    end
+    MakePart(m, "Torso", Vector3.new(2, 2, 1), CFrame.new(0, 3, 0), rig.Shirt)
+    MakePart(m, "Left Arm", Vector3.new(1, 2, 1), CFrame.new(-1.5, 3, 0), rig.Skin)
+    MakePart(m, "Right Arm", Vector3.new(1, 2, 1), CFrame.new(1.5, 3, 0), rig.Skin)
+    MakePart(m, "Left Leg", Vector3.new(1, 2, 1), CFrame.new(-0.5, 1, 0), rig.Pants)
+    MakePart(m, "Right Leg", Vector3.new(1, 2, 1), CFrame.new(0.5, 1, 0), rig.Pants)
+    m.PrimaryPart = root
+    return m
+end
+
+local function CloneModel(src)
+    if not src then return nil end
+    local old = src.Archivable
+    src.Archivable = true
+    local ok, clone = pcall(function() return src:Clone() end)
+    src.Archivable = old
     if not ok or not clone then return nil end
     for _, d in ipairs(clone:GetDescendants()) do
-        if d:IsA("Script") or d:IsA("LocalScript") or d:IsA("Sound") or d:IsA("ForceField") then d:Destroy()
-        elseif d:IsA("BasePart") then d.Anchored = true end
+        if d:IsA("BaseScript") or d:IsA("Sound") or d:IsA("ForceField") or d:IsA("ParticleEmitter") or d:IsA("BillboardGui") then
+            d:Destroy()
+        elseif d:IsA("BasePart") then
+            d.Anchored = true
+        end
     end
     local hum = clone:FindFirstChildOfClass("Humanoid")
     if hum then hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end
     return clone
 end
 
+-- Builds a user's avatar from Roblox's avatar API (nothing is read from the game).
+-- Falls back to the R15 dummy painted with the avatar's body colors.
+local AvatarCache = {}
+local function TryCall(obj, names, ...)
+    for _, n in ipairs(names) do
+        local f = obj[n]
+        if f then
+            local ok, r = pcall(f, obj, ...)
+            if ok and r then return r end
+        end
+    end
+end
+local function FetchAvatar(userId)
+    userId = tonumber(userId) or LocalPlayer.UserId
+    if AvatarCache[userId] then return AvatarCache[userId]:Clone() end
+    local model = TryCall(Players, { "CreateHumanoidModelFromUserIdAsync", "CreateHumanoidModelFromUserId" }, userId)
+    local desc
+    if not model then
+        desc = TryCall(Players, { "GetHumanoidDescriptionFromUserIdAsync", "GetHumanoidDescriptionFromUserId" }, userId)
+        if desc then
+            model = TryCall(Players, { "CreateHumanoidModelFromDescriptionAsync", "CreateHumanoidModelFromDescription" }, desc, Enum.HumanoidRigType.R15)
+        end
+    end
+    if model then
+        for _, d in ipairs(model:GetDescendants()) do
+            if d:IsA("BaseScript") or d:IsA("Sound") then d:Destroy()
+            elseif d:IsA("BasePart") then d.Anchored = true; d.CanCollide = false end
+        end
+        local hum = model:FindFirstChildOfClass("Humanoid")
+        if hum then hum.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None end
+        model.Archivable = true
+        AvatarCache[userId] = model:Clone()
+        return model
+    end
+    if desc then
+        return BuildR15({ Skin = desc.HeadColor, Shirt = desc.TorsoColor, Pants = desc.LeftLegColor, Shoes = desc.LeftLegColor, Face = true })
+    end
+    return nil
+end
+Library.FetchAvatar = FetchAvatar
+
+-- bone pairs used for the skeleton overlay (R15 first, R6 fallback)
+local Bones = {
+    { "Head", "UpperTorso" }, { "UpperTorso", "LowerTorso" },
+    { "UpperTorso", "LeftUpperArm" }, { "LeftUpperArm", "LeftLowerArm" }, { "LeftLowerArm", "LeftHand" },
+    { "UpperTorso", "RightUpperArm" }, { "RightUpperArm", "RightLowerArm" }, { "RightLowerArm", "RightHand" },
+    { "LowerTorso", "LeftUpperLeg" }, { "LeftUpperLeg", "LeftLowerLeg" }, { "LeftLowerLeg", "LeftFoot" },
+    { "LowerTorso", "RightUpperLeg" }, { "RightUpperLeg", "RightLowerLeg" }, { "RightLowerLeg", "RightFoot" },
+    { "Head", "Torso" }, { "Torso", "Left Arm" }, { "Torso", "Right Arm" }, { "Torso", "Left Leg" }, { "Torso", "Right Leg" },
+}
+
 function Window:_BuildPreview()
+    local W = self
     local c = self.Aux.Preview.Content
     local holder = NewGroupbox(c, "Preview", { LayoutOrder = 1 })
-    local row = holder:_Row(260)
-    local vpf = New("ViewportFrame", { Parent = row, BackgroundColor3 = "Background", Size = UDim2.fromScale(1, 1), Ambient = Color3.fromRGB(170, 170, 170), LightColor = Color3.fromRGB(255, 255, 255), LightDirection = Vector3.new(-1, -1, -1) })
+    local row = holder:_Row(270)
+    local vpf = New("ViewportFrame", { Parent = row, BackgroundColor3 = "Background", Size = UDim2.fromScale(1, 1), ClipsDescendants = true,
+        Ambient = Color3.fromRGB(150, 150, 155), LightColor = Color3.fromRGB(255, 250, 240), LightDirection = Vector3.new(-0.6, -1, -0.8) })
     Stroke(vpf, "Outline")
     local cam = Instance.new("Camera")
     cam.FieldOfView = 70
@@ -1977,112 +2130,150 @@ function Window:_BuildPreview()
     world.Parent = vpf
     local dragArea = New("TextButton", { Parent = vpf, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), Text = "", ZIndex = 2 })
 
-    -- overlay
+    ------------------------------------------------ overlay
     local overlay = New("Frame", { Parent = vpf, BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 3 })
-    local box = New("Frame", { Parent = overlay, BackgroundTransparency = 1, ZIndex = 3 })
-    local boxStroke = Stroke(box, "Accent")
-    local boxOuter = New("Frame", { Parent = box, BackgroundTransparency = 1, Position = UDim2.fromOffset(-1, -1), Size = UDim2.new(1, 2, 1, 2), ZIndex = 3 })
-    Stroke(boxOuter, "OutlineDark")
-    local nameL = New("TextLabel", { Parent = overlay, Text = LocalPlayer.Name, TextColor3 = "Text", TextSize = 12, AnchorPoint = Vector2.new(0.5, 1), Size = UDim2.fromOffset(200, 14), TextStrokeTransparency = 0.5, ZIndex = 3 })
-    local distL = New("TextLabel", { Parent = overlay, Text = "24m", TextColor3 = "SubText", TextSize = 11, AnchorPoint = Vector2.new(0.5, 0), Size = UDim2.fromOffset(200, 14), TextStrokeTransparency = 0.5, ZIndex = 3 })
-    local hpBg = New("Frame", { Parent = overlay, BackgroundColor3 = Color3.new(0, 0, 0), ZIndex = 3 })
-    local hpFill = New("Frame", { Parent = hpBg, BackgroundColor3 = Color3.fromRGB(80, 230, 120), AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 1, 1, -1), Size = UDim2.new(1, -2, 0.82, -2), ZIndex = 3 })
+    local function line(parent)
+        return New("Frame", { Parent = parent or overlay, BorderSizePixel = 0, AnchorPoint = Vector2.new(0.5, 0.5), BackgroundColor3 = Color3.new(1, 1, 1), ZIndex = 4 })
+    end
+    local function drawLine(f, a, b, thick)
+        local d = b - a
+        f.Position = UDim2.fromOffset((a.X + b.X) / 2, (a.Y + b.Y) / 2)
+        f.Size = UDim2.fromOffset(d.Magnitude, thick or 1)
+        f.Rotation = math.deg(math.atan2(d.Y, d.X))
+    end
 
+    local boxFill = New("Frame", { Parent = overlay, BackgroundColor3 = "Accent", BackgroundTransparency = 0.85, ZIndex = 3 })
+    local box = New("Frame", { Parent = overlay, BackgroundTransparency = 1, ZIndex = 4 })
+    local boxStroke = Stroke(box, "Accent")
+    local boxOuter = New("Frame", { Parent = box, BackgroundTransparency = 1, Position = UDim2.fromOffset(-1, -1), Size = UDim2.new(1, 2, 1, 2), ZIndex = 4 })
+    Stroke(boxOuter, "OutlineDark")
+    local corners = {}
+    for i = 1, 8 do corners[i] = New("Frame", { Parent = overlay, BorderSizePixel = 0, BackgroundColor3 = "Accent", ZIndex = 4 }) end
+    local nameL = New("TextLabel", { Parent = overlay, Text = "", TextColor3 = "Text", TextSize = 12, AnchorPoint = Vector2.new(0.5, 1), Size = UDim2.fromOffset(200, 14), TextStrokeTransparency = 0.4, ZIndex = 5 })
+    local distL = New("TextLabel", { Parent = overlay, Text = "", TextColor3 = "SubText", TextSize = 11, AnchorPoint = Vector2.new(0.5, 0), Size = UDim2.fromOffset(200, 14), TextStrokeTransparency = 0.4, ZIndex = 5 })
+    local hpBg = New("Frame", { Parent = overlay, BackgroundColor3 = Color3.new(0, 0, 0), ZIndex = 4 })
+    local hpFill = New("Frame", { Parent = hpBg, AnchorPoint = Vector2.new(0, 1), Position = UDim2.new(0, 1, 1, -1), Size = UDim2.new(1, -2, 0.8, -2), ZIndex = 5 })
+    local tracer = line()
+    local boneLines = {}
+
+    ------------------------------------------------ settings ui
     local opts = NewGroupbox(c, "Settings", { LayoutOrder = 2 })
-    local modelDD = opts:AddDropdown("ML_PreviewModel", { Text = "Model", Values = { "Self", "Dummy" }, Default = "Dummy" })
+    local modelDD = opts:AddDropdown("ML_PreviewModel", { Text = "Model", Values = {}, Default = nil })
     local fov = opts:AddSlider("ML_PreviewFOV", { Text = "Field Of View", Min = 30, Max = 110, Default = 70, Rounding = 0 })
+    local spin = opts:AddToggle("ML_PreviewSpin", { Text = "Auto Rotate", Default = false })
     SaveManager.Ignore.ML_PreviewModel = true
 
-    local yaw = math.rad(160)
-    local model, origColors = nil, {}
+    local yaw = math.rad(200)
+    local model, orig = nil, {}
 
     local function fitCamera()
         if not model then return end
-        local cf, size = model:GetBoundingBox()
-        local dist = (size.Y * 0.5) / math.tan(math.rad(cam.FieldOfView / 2)) * 1.35
-        cam.CFrame = CFrame.lookAt(cf.Position + Vector3.new(0, 0, dist), cf.Position)
+        local _, size = model:GetBoundingBox()
+        local t = math.tan(math.rad(cam.FieldOfView / 2))
+        local aspect = vpf.AbsoluteSize.X / math.max(vpf.AbsoluteSize.Y, 1)
+        local distY = (size.Y * 0.5) / t
+        local distX = (math.max(size.X, size.Z) * 0.5) / (t * math.max(aspect, 0.1))
+        cam.CFrame = CFrame.lookAt(Vector3.new(0, 0, math.max(distY, distX) * 1.45), Vector3.zero)
     end
+
     local function applyChams()
         if not model then return end
+        local s = Preview.Settings
         for _, p in ipairs(model:GetDescendants()) do
             if p:IsA("BasePart") then
-                if not origColors[p] then origColors[p] = { p.Color, p.Material } end
-                if Preview.Settings.Chams then
-                    p.Color = Preview.Settings.ChamsColor
+                if not orig[p] then orig[p] = { p.Color, p.Material, p.Transparency } end
+                if s.Chams and orig[p][3] < 1 then
+                    p.Color = s.ChamsColor
                     p.Material = Enum.Material.SmoothPlastic
+                    p.Transparency = s.ChamsTransparency or 0
                 else
-                    p.Color, p.Material = origColors[p][1], origColors[p][2]
+                    p.Color, p.Material, p.Transparency = orig[p][1], orig[p][2], orig[p][3]
                 end
+            elseif p:IsA("Decal") then
+                p.Transparency = s.Chams and 1 or 0
             end
         end
     end
-    local function loadModel()
+
+    local function useModel(m, label)
         if model then model:Destroy() end
-        table.clear(origColors)
-        model = (modelDD.Value == "Self" and CloneCharacter()) or BuildDummy()
+        table.clear(orig)
+        model = m
+        W.PreviewModel = m
         model.Parent = world
         if not model.PrimaryPart then model.PrimaryPart = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChildWhichIsA("BasePart") end
         local cf = model:GetBoundingBox()
+        -- center on origin, then face the camera
         model:PivotTo(CFrame.Angles(0, yaw, 0) * (CFrame.new(-cf.Position) * model:GetPivot()))
-        nameL.Text = (modelDD.Value == "Self") and LocalPlayer.Name or "Dummy"
+        Preview.CurrentName = label or model.Name
         fitCamera()
         applyChams()
     end
-    modelDD:OnChanged(loadModel)
-    fov:OnChanged(function(v) cam.FieldOfView = v; fitCamera() end)
 
-    local dragging, lastX
-    Connect(dragArea.MouseButton1Down, function() dragging = true; lastX = UserInputService:GetMouseLocation().X end)
-    Connect(UserInputService.InputEnded, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end end)
-    Connect(UserInputService.InputChanged, function(i)
-        if dragging and model and i.UserInputType == Enum.UserInputType.MouseMovement then
-            local x = UserInputService:GetMouseLocation().X
-            local d = (x - lastX) * 0.012
-            lastX = x
-            yaw += d
-            model:PivotTo(CFrame.Angles(0, d, 0) * model:GetPivot())
-        end
-    end)
-
-    local function project(world3)
-        local p = cam.CFrame:PointToObjectSpace(world3)
-        local size = vpf.AbsoluteSize
-        local t = math.tan(math.rad(cam.FieldOfView / 2))
-        local aspect = size.X / math.max(size.Y, 1)
-        local nx = (p.X / -p.Z) / (t * aspect)
-        local ny = (p.Y / -p.Z) / t
-        return Vector2.new((nx + 1) / 2 * size.X, (1 - ny) / 2 * size.Y)
+    local loadToken = 0
+    local function loadAsync(label, builder)
+        loadToken += 1
+        local token = loadToken
+        task.spawn(function()
+            local ok, m = pcall(builder)
+            if token ~= loadToken or Library.Unloaded then
+                if ok and typeof(m) == "Instance" then m:Destroy() end
+                return
+            end
+            if not ok or typeof(m) ~= "Instance" then
+                Library:Notify({ Title = "ESP Preview", Description = "Couldn't load '" .. tostring(label) .. "', using Dummy" })
+                m, label = BuildR15(), "Dummy"
+            end
+            useModel(m, label)
+        end)
+    end
+    local function loadNamed(name)
+        local builder = Preview.Models[name]
+        if not builder then builder = BuildR15; name = "Dummy" end
+        loadAsync(name == "Self" and LocalPlayer.Name or name, builder)
     end
 
-    Connect(RunService.RenderStepped, function()
-        if not self.Aux.Preview.Frame.Visible or not model then return end
-        local s = Preview.Settings
-        local cf, size = model:GetBoundingBox()
-        local minV, maxV = Vector2.new(math.huge, math.huge), Vector2.new(-math.huge, -math.huge)
-        for x = -1, 1, 2 do for y = -1, 1, 2 do for z = -1, 1, 2 do
-            local v = project((cf * CFrame.new(size.X / 2 * x, size.Y / 2 * y, size.Z / 2 * z)).Position)
-            minV = Vector2.new(math.min(minV.X, v.X), math.min(minV.Y, v.Y))
-            maxV = Vector2.new(math.max(maxV.X, v.X), math.max(maxV.Y, v.Y))
-        end end end
-        local w, h = maxV.X - minV.X, maxV.Y - minV.Y
-        box.Visible = s.Box
-        box.Position = UDim2.fromOffset(minV.X, minV.Y)
-        box.Size = UDim2.fromOffset(w, h)
-        boxStroke.Color = s.BoxColor or Theme.Accent
-        nameL.Visible = s.Name
-        nameL.Position = UDim2.fromOffset(minV.X + w / 2, minV.Y - 2)
-        distL.Visible = s.Distance
-        distL.Position = UDim2.fromOffset(minV.X + w / 2, maxV.Y + 2)
-        hpBg.Visible = s.HealthBar
-        hpBg.Position = UDim2.fromOffset(minV.X - 6, minV.Y - 1)
-        hpBg.Size = UDim2.fromOffset(4, h + 2)
-    end)
-
+    ------------------------------------------------ public API
+    -- Preview:AddModel("Enemy", function() return someModel:Clone() end)
+    function Preview:AddModel(name, builder)
+        if not self.Models[name] then table.insert(self.ModelOrder, name) end
+        self.Models[name] = builder
+        modelDD:SetValues(self.ModelOrder)
+    end
+    -- Preview:SetModel("Self" | "Dummy" | "R6" | registered name | Model instance (cloned))
+    function Preview:SetModel(m)
+        if typeof(m) == "number" then
+            loadAsync(Preview.Settings.NameText or ("User " .. m), function()
+                local mdl = FetchAvatar(m)
+                pcall(function() Preview.CurrentName = Players:GetNameFromUserIdAsync(m) end)
+                return mdl
+            end)
+        elseif typeof(m) == "Instance" then
+            local clone = CloneModel(m)
+            if clone then useModel(clone, m.Name) end
+        elseif typeof(m) == "string" then
+            if modelDD.Value == m then loadNamed(m) else modelDD:SetValue(m) end
+        end
+    end
+    -- Preview:SetRig({ Skin = Color3, Shirt = Color3, Pants = Color3, Shoes = Color3, Face = bool })
+    function Preview:SetRig(t)
+        for k, v in pairs(t) do self.Rig[k] = v end
+        if modelDD.Value == "Dummy" or modelDD.Value == "R6" then loadNamed(modelDD.Value) end
+    end
     function Preview:Set(key, value)
         self.Settings[key] = value
-        if key == "Chams" or key == "ChamsColor" then applyChams() end
+        if key == "Chams" or key == "ChamsColor" or key == "ChamsTransparency" then applyChams() end
     end
-    -- bind preview settings to your own Toggles/Options: Library.Preview:Bind({ Box = "EspBox", BoxColor = "EspBoxColor" })
+    function Preview:SetRotation(deg)
+        if not model then return end
+        local d = math.rad(deg) - yaw
+        yaw = math.rad(deg)
+        model:PivotTo(CFrame.Angles(0, d, 0) * model:GetPivot())
+    end
+    function Preview:SetFOV(v) fov:SetValue(v) end
+    function Preview:GetModel() return model end
+    function Preview:Refresh() loadNamed(modelDD.Value or "Dummy") end
+    -- Preview:Bind({ Box = "EspBox", BoxColor = "EspBoxColor", ... }) links settings to your Toggles/Options
     function Preview:Bind(map)
         for key, idx in pairs(map) do
             local obj = Toggles[idx] or Options[idx]
@@ -2093,9 +2284,129 @@ function Window:_BuildPreview()
             end
         end
     end
+
+    Preview.Models = {}
+    Preview.ModelOrder = {}
+    Preview:AddModel("Self", function() return FetchAvatar(LocalPlayer.UserId) end)
+    Preview:AddModel("Dummy", function() return BuildR15() end)
+    Preview:AddModel("R6", function() return BuildR6() end)
+
+    modelDD:OnChanged(function(v) if v then loadNamed(v) end end)
+    fov:OnChanged(function(v) cam.FieldOfView = v; fitCamera() end)
+    spin:OnChanged(function(v) Preview.Settings.AutoRotate = v and 0.6 or 0 end)
+
+    ------------------------------------------------ rotate by dragging
+    local dragging, lastX
+    Connect(dragArea.MouseButton1Down, function() dragging = true; lastX = MousePos().X end)
+    Connect(UserInputService.InputEnded, function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end end)
+    Connect(UserInputService.InputChanged, function(i)
+        if dragging and model and i.UserInputType == Enum.UserInputType.MouseMovement then
+            local x = MousePos().X
+            Preview:SetRotation(math.deg(yaw + (x - lastX) * 0.012))
+            lastX = x
+        end
+    end)
+
+    ------------------------------------------------ projection + overlay update
+    local function project(p3)
+        local p = cam.CFrame:PointToObjectSpace(p3)
+        local size = vpf.AbsoluteSize
+        local t = math.tan(math.rad(cam.FieldOfView / 2))
+        local aspect = size.X / math.max(size.Y, 1)
+        local z = math.min(p.Z, -0.01)
+        local nx = (p.X / -z) / (t * aspect)
+        local ny = (p.Y / -z) / t
+        return Vector2.new((nx + 1) / 2 * size.X, (1 - ny) / 2 * size.Y)
+    end
+
+    Connect(RunService.RenderStepped, function(dt)
+        if not self.Aux.Preview.Frame.Visible or not model or not model.Parent then return end
+        local s = Preview.Settings
+        if s.AutoRotate and s.AutoRotate ~= 0 and not dragging then
+            Preview:SetRotation(math.deg(yaw + s.AutoRotate * dt))
+        end
+        local accent = Theme.Accent
+        local cf, size = model:GetBoundingBox()
+        local minV, maxV = Vector2.new(math.huge, math.huge), Vector2.new(-math.huge, -math.huge)
+        for x = -1, 1, 2 do for y = -1, 1, 2 do for z = -1, 1, 2 do
+            local v = project((cf * CFrame.new(size.X / 2 * x, size.Y / 2 * y, size.Z / 2 * z)).Position)
+            minV = Vector2.new(math.min(minV.X, v.X), math.min(minV.Y, v.Y))
+            maxV = Vector2.new(math.max(maxV.X, v.X), math.max(maxV.Y, v.Y))
+        end end end
+        minV = Vector2.new(math.floor(minV.X), math.floor(minV.Y))
+        maxV = Vector2.new(math.floor(maxV.X), math.floor(maxV.Y))
+        local w, h = maxV.X - minV.X, maxV.Y - minV.Y
+        local boxColor = s.BoxColor or accent
+
+        -- box (full or corners)
+        local full = s.Box and s.BoxStyle ~= "Corner"
+        box.Visible = full
+        box.Position = UDim2.fromOffset(minV.X, minV.Y)
+        box.Size = UDim2.fromOffset(w, h)
+        boxStroke.Color = boxColor
+        boxFill.Visible = s.Box and s.BoxFill
+        boxFill.Position = box.Position
+        boxFill.Size = box.Size
+        boxFill.BackgroundColor3 = boxColor
+        boxFill.BackgroundTransparency = s.BoxFillTransparency or 0.85
+        local cl = math.floor(math.min(w, h) * 0.25)
+        local showCorners = s.Box and s.BoxStyle == "Corner"
+        local pts = { { minV.X, minV.Y, 1, 1 }, { maxV.X, minV.Y, -1, 1 }, { minV.X, maxV.Y, 1, -1 }, { maxV.X, maxV.Y, -1, -1 } }
+        for i, pt in ipairs(pts) do
+            local hz, vt = corners[i * 2 - 1], corners[i * 2]
+            hz.Visible, vt.Visible = showCorners, showCorners
+            hz.BackgroundColor3, vt.BackgroundColor3 = boxColor, boxColor
+            hz.Size = UDim2.fromOffset(cl, 1)
+            hz.Position = UDim2.fromOffset(pt[3] > 0 and pt[1] or pt[1] - cl + 1, pt[2])
+            vt.Size = UDim2.fromOffset(1, cl)
+            vt.Position = UDim2.fromOffset(pt[1], pt[4] > 0 and pt[2] or pt[2] - cl + 1)
+        end
+
+        -- name / distance
+        nameL.Visible = s.Name
+        nameL.Text = s.NameText or Preview.CurrentName or ""
+        nameL.TextColor3 = s.NameColor or Theme.Text
+        nameL.Position = UDim2.fromOffset(minV.X + w / 2, minV.Y - 3)
+        distL.Visible = s.Distance
+        distL.Text = s.DistanceText or ""
+        distL.Position = UDim2.fromOffset(minV.X + w / 2, maxV.Y + 3)
+
+        -- health bar
+        local hp = math.clamp(s.Health or 1, 0, 1)
+        hpBg.Visible = s.HealthBar
+        hpBg.Position = UDim2.fromOffset(minV.X - 6, minV.Y - 1)
+        hpBg.Size = UDim2.fromOffset(4, h + 2)
+        hpFill.Size = UDim2.new(1, -2, hp, -2)
+        hpFill.BackgroundColor3 = Color3.fromRGB(235, 70, 70):Lerp(Color3.fromRGB(80, 230, 120), hp)
+
+        -- tracer from bottom of the viewport
+        tracer.Visible = s.Tracer
+        if s.Tracer then
+            tracer.BackgroundColor3 = s.TracerColor or boxColor
+            drawLine(tracer, Vector2.new(vpf.AbsoluteSize.X / 2, vpf.AbsoluteSize.Y), Vector2.new(minV.X + w / 2, maxV.Y))
+        end
+
+        -- skeleton
+        local used = 0
+        if s.Skeleton then
+            for _, b in ipairs(Bones) do
+                local pa, pb = model:FindFirstChild(b[1]), model:FindFirstChild(b[2])
+                if pa and pb and pa:IsA("BasePart") and pb:IsA("BasePart") then
+                    used += 1
+                    local l = boneLines[used] or line()
+                    boneLines[used] = l
+                    l.Visible = true
+                    l.BackgroundColor3 = s.SkeletonColor or Color3.new(1, 1, 1)
+                    drawLine(l, project(pa.Position), project(pb.Position))
+                end
+            end
+        end
+        for i = used + 1, #boneLines do boneLines[i].Visible = false end
+    end)
+
     Library:OnUnload(function() if model then model:Destroy() end end)
-    self.LoadPreviewModel = loadModel
-    loadModel()
+    self.LoadPreviewModel = function() Preview:Refresh() end
+    modelDD:SetValue("Self")
 end
 
 --------------------------------------------------------------------------------
@@ -2125,7 +2436,12 @@ function Library:SetOpen(open)
     WindowLayer.Visible = true
 end
 
-function Library:Toggle() self:SetOpen(not self.Open) end
+function Library:Toggle()
+    local now = os.clock()
+    if self._LastToggle and now - self._LastToggle < 0.15 then return end
+    self._LastToggle = now
+    self:SetOpen(not self.Open)
+end
 
 function Library:OnUnload(fn) table.insert(self.UnloadCallbacks, fn) end
 
